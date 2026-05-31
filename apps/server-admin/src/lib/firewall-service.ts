@@ -164,6 +164,9 @@ export class FirewallService {
     runType: 0 | 1 | 3 = config.run_type,
     strict = false,
   ) {
+    if (getRuntimeProfile().deployment_target === "openwrt") {
+      return;
+    }
     const request = goBackend.initIptables({
       chain_name: "FN-KNOCK-FW",
       parent_chain: ["INPUT", "DOCKER-USER"],
@@ -266,6 +269,12 @@ export class FirewallService {
 
   async clearFirewall() {
     this.ensureHostFirewallAvailable();
+    const profile = getRuntimeProfile();
+    if (profile.deployment_target === "openwrt") {
+      return {
+        gatewayPort: this.resolveGatewayPort(),
+      };
+    }
     const gatewayPort = this.resolveGatewayPort();
     await this.clearLegacyGatewayRedirects(gatewayPort, true);
     await this.runGoBackendOrThrow(

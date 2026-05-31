@@ -704,9 +704,7 @@ registerDDNSCron(app);
 registerSystemMonitorCron(app);
 registerUpdateCron(app);
 void updateManager.prepareOnBoot();
-if (runtimeCapabilities.self_update_available) {
-  void updateManager.checkNow("startup");
-}
+void updateManager.checkNow("startup");
 systemClockManager.prepareOnBoot();
 
 app.get("/", () => serveIndexHtml(STATIC_PATH), hideFromDocs);

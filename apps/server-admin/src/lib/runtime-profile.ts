@@ -121,10 +121,10 @@ export const getRuntimeCapabilities = (
 
   return {
     direct_mode_available: hostRuntimeAvailable && !isOpenWrt,
-    host_firewall_available: hostRuntimeAvailable && !isOpenWrt,
-    smart_connect_available: hostRuntimeAvailable && !isOpenWrt,
+    host_firewall_available: hostRuntimeAvailable,
+    smart_connect_available: hostRuntimeAvailable,
     system_clock_sync_available: hostRuntimeAvailable && !isOpenWrt,
-    self_update_available: profile.deployment_target === "fpk",
+    self_update_available: profile.deployment_target !== "docker",
     terminal_available: profile.deployment_target !== "docker",
     shared_root_available: hasSharedRoot(),
   };

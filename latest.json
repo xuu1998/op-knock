@@ -1,0 +1,10 @@
+{
+  "version": "1.7.0",
+  "update_available": false,
+  "force_update": false,
+  "download_url": "https://github.com/xuu1998/op-knock/releases/latest/download/fn-knock_1.7.0_x86_64.ipk",
+  "sha256": "",
+  "download_url_arm64": "",
+  "sha256_arm64": "",
+  "release_notes": "OpenWRT 初始版本\n\n- 智能连接 (Smart Connect / DNS 转发)\n- SSH 安全防护 + IP 白名单\n- 版本更新提示 (通过 opkg)"
+}

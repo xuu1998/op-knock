@@ -59,12 +59,27 @@ const DNSMASQ_SYSTEMD_UNIT_CANDIDATES = [
   "/usr/lib/systemd/system/dnsmasq.service",
 ] as const;
 const DNSMASQ_INIT_SCRIPT_PATH = "/etc/init.d/dnsmasq";
+const OPENWRT_UCI_PATH = "/sbin/uci";
+const OPENWRT_DNSMASQ_CONF_DIR = "/tmp/dnsmasq.d";
+const OPENWRT_SMART_CONNECT_CONF = `${OPENWRT_DNSMASQ_CONF_DIR}/fn-knock-smart-connect.conf`;
 
 const createDefaultInstallState = (): DnsmasqInstallState => ({
   status: "uninstalled",
   progress: 0,
   message: "未检测到 dnsmasq，请先完成安装",
 });
+
+let isOpenWrtResult: boolean | null = null;
+
+const isOpenWrt = async (): Promise<boolean> => {
+  if (isOpenWrtResult !== null) return isOpenWrtResult;
+  if (process.env.FN_KNOCK_OPENWRT === "1") {
+    isOpenWrtResult = true;
+    return true;
+  }
+  isOpenWrtResult = await fileExists(OPENWRT_UCI_PATH);
+  return isOpenWrtResult;
+};
 
 class DnsmasqManager {
   private executableInfoPromise: Promise<DnsmasqExecutableInfo | null> | null =
@@ -188,6 +203,10 @@ class DnsmasqManager {
   }
 
   private async ensureManagedDirectory(): Promise<void> {
+    if (await isOpenWrt()) {
+      await mkdir(OPENWRT_DNSMASQ_CONF_DIR, { recursive: true });
+      return;
+    }
     await mkdir(dirname(SMART_CONNECT_MANAGED_CONF_PATH), {
       recursive: true,
     });
@@ -216,6 +235,9 @@ class DnsmasqManager {
   }
 
   private async hasServiceDefinition(): Promise<boolean> {
+    if (await isOpenWrt()) {
+      return true;
+    }
     const [hasSystemdUnit, hasInitScript] = await Promise.all([
       this.hasSystemdUnit(),
       this.hasInitScript(),
@@ -241,6 +263,9 @@ class DnsmasqManager {
   }
 
   private async ensureServicePackageInstalled(): Promise<void> {
+    if (await isOpenWrt()) {
+      return;
+    }
     if (await this.hasServiceDefinition()) {
       return;
     }
@@ -291,8 +316,11 @@ class DnsmasqManager {
   private async isManagedConfigWritable(): Promise<boolean> {
     try {
       await this.ensureManagedDirectory();
+      const targetDir = (await isOpenWrt())
+        ? OPENWRT_DNSMASQ_CONF_DIR
+        : dirname(SMART_CONNECT_MANAGED_CONF_PATH);
       const testPath = join(
-        dirname(SMART_CONNECT_MANAGED_CONF_PATH),
+        targetDir,
         `.fn-knock-write-test-${Date.now()}`,
       );
       await writeFile(testPath, "", "utf8");
@@ -304,6 +332,15 @@ class DnsmasqManager {
   }
 
   private async getServiceActive(): Promise<boolean> {
+    if (await isOpenWrt()) {
+      try {
+        const result = await this.runProcess("/etc/init.d/dnsmasq", ["status"]);
+        return result.code === 0;
+      } catch {
+        return false;
+      }
+    }
+
     if (await this.hasSystemdUnit()) {
       try {
         const result = await this.runProcess("systemctl", [
@@ -332,6 +369,19 @@ class DnsmasqManager {
   }
 
   private async restartService(): Promise<void> {
+    if (await isOpenWrt()) {
+      try {
+        await this.ensureProcessSucceeded(
+          "/etc/init.d/dnsmasq",
+          ["restart"],
+          "重启 dnsmasq 失败",
+        );
+        return;
+      } catch (error) {
+        throw error;
+      }
+    }
+
     const errors: string[] = [];
 
     if (await this.hasSystemdUnit()) {
@@ -376,6 +426,10 @@ class DnsmasqManager {
   }
 
   private async enableServiceOnBoot(): Promise<void> {
+    if (await isOpenWrt()) {
+      return;
+    }
+
     if (await this.hasSystemdUnit()) {
       try {
         const result = await this.runProcess("systemctl", [
@@ -421,6 +475,19 @@ class DnsmasqManager {
   }
 
   async getStatus(): Promise<DnsmasqStatus> {
+    if (await isOpenWrt()) {
+      const executable = await this.detectExecutable();
+      return {
+        installed: executable !== null,
+        service_active: await this.getServiceActive(),
+        initialized: executable !== null,
+        version: executable?.version || "",
+        install_state: executable
+          ? this.getInstalledState(executable.version)
+          : createDefaultInstallState(),
+      };
+    }
+
     if (this.installState.status === "installing") {
       const executable = await this.detectExecutable();
       return {
@@ -498,7 +565,54 @@ class DnsmasqManager {
     ].join("\n");
   }
 
-  async applyManagedConfig(input: {
+  private async applyManagedConfigOpenWrt(
+    selectedIpv4: string,
+    domains: string[],
+    previousDomains: string[],
+  ): Promise<void> {
+    const previousDomainsSet = new Set(previousDomains);
+    const nextDomainsSet = new Set(domains);
+
+    const toRemove = domains.filter((d) => !nextDomainsSet.has(d)).length > 0
+      ? domains
+      : [...previousDomainsSet].filter((d) => !nextDomainsSet.has(d));
+
+    if (toRemove.length === 0 && previousDomains.length === domains.length) {
+      return;
+    }
+
+    const toAdd = domains.filter((d) => !previousDomainsSet.has(d));
+
+    for (const domain of toRemove) {
+      try {
+        await this.runProcess(OPENWRT_UCI_PATH, [
+          "del_list",
+          "dhcp.@dnsmasq[0].address",
+          `/${domain}/${selectedIpv4}`,
+        ]);
+      } catch {
+        // ignore del failures
+      }
+    }
+
+    for (const domain of toAdd) {
+      await this.ensureProcessSucceeded(
+        OPENWRT_UCI_PATH,
+        ["add_list", "dhcp.@dnsmasq[0].address", `/${domain}/${selectedIpv4}`],
+        `添加 DNS 记录 /${domain}/${selectedIpv4} 失败`,
+      );
+    }
+
+    await this.ensureProcessSucceeded(
+      OPENWRT_UCI_PATH,
+      ["commit", "dhcp"],
+      "提交 dnsmasq UCI 配置失败",
+    );
+
+    await this.restartService();
+  }
+
+  private async applyManagedConfigGeneric(input: {
     selectedIpv4: string;
     domains: string[];
   }): Promise<void> {
@@ -507,30 +621,27 @@ class DnsmasqManager {
       input.domains,
     );
 
+    const managedPath = SMART_CONNECT_MANAGED_CONF_PATH;
     await this.ensureManagedDirectory();
     await this.validateConfigContent(nextContent);
 
-    const previousExists = await fileExists(SMART_CONNECT_MANAGED_CONF_PATH);
+    const previousExists = await fileExists(managedPath);
     const previousContent = previousExists
-      ? await readFile(SMART_CONNECT_MANAGED_CONF_PATH, "utf8")
+      ? await readFile(managedPath, "utf8")
       : null;
-    const stagePath = `${SMART_CONNECT_MANAGED_CONF_PATH}.tmp`;
+    const stagePath = `${managedPath}.tmp`;
 
     try {
       await writeFile(stagePath, nextContent, "utf8");
-      await rename(stagePath, SMART_CONNECT_MANAGED_CONF_PATH);
+      await rename(stagePath, managedPath);
       await this.restartService();
     } catch (error) {
       await rm(stagePath, { force: true });
 
       if (previousExists && previousContent !== null) {
-        await writeFile(
-          SMART_CONNECT_MANAGED_CONF_PATH,
-          previousContent,
-          "utf8",
-        );
+        await writeFile(managedPath, previousContent, "utf8");
       } else {
-        await rm(SMART_CONNECT_MANAGED_CONF_PATH, { force: true });
+        await rm(managedPath, { force: true });
       }
 
       try {
@@ -546,22 +657,41 @@ class DnsmasqManager {
     }
   }
 
+  async applyManagedConfig(input: {
+    selectedIpv4: string;
+    domains: string[];
+  }): Promise<void> {
+    if (await isOpenWrt()) {
+      await this.applyManagedConfigOpenWrt(
+        input.selectedIpv4,
+        input.domains,
+        [],
+      );
+      return;
+    }
+
+    await this.applyManagedConfigGeneric(input);
+  }
+
   async clearManagedConfig(): Promise<void> {
-    const previousExists = await fileExists(SMART_CONNECT_MANAGED_CONF_PATH);
+    if (await isOpenWrt()) {
+      await this.restartService();
+      return;
+    }
+
+    const managedPath = SMART_CONNECT_MANAGED_CONF_PATH;
+    const previousExists = await fileExists(managedPath);
     if (!previousExists) {
       return;
     }
 
-    const previousContent = await readFile(
-      SMART_CONNECT_MANAGED_CONF_PATH,
-      "utf8",
-    );
+    const previousContent = await readFile(managedPath, "utf8");
 
     try {
-      await rm(SMART_CONNECT_MANAGED_CONF_PATH, { force: true });
+      await rm(managedPath, { force: true });
       await this.restartService();
     } catch (error) {
-      await writeFile(SMART_CONNECT_MANAGED_CONF_PATH, previousContent, "utf8");
+      await writeFile(managedPath, previousContent, "utf8");
       try {
         await this.restartService();
       } catch (rollbackError) {
@@ -575,6 +705,20 @@ class DnsmasqManager {
   }
 
   private async installInBackground(): Promise<void> {
+    if (await isOpenWrt()) {
+      const executable = await this.detectExecutable();
+      if (executable) {
+        this.installState = this.getInstalledState(executable.version);
+      } else {
+        this.installState = {
+          status: "error",
+          progress: 0,
+          message: "OpenWRT 未检测到 dnsmasq，请确认系统已安装",
+        };
+      }
+      return;
+    }
+
     try {
       this.installState = {
         status: "installing",
@@ -633,6 +777,20 @@ class DnsmasqManager {
   }
 
   private async initializeInBackground(): Promise<void> {
+    if (await isOpenWrt()) {
+      const executable = await this.detectExecutable();
+      if (executable) {
+        this.installState = this.getInstalledState(executable.version);
+      } else {
+        this.installState = {
+          status: "error",
+          progress: 0,
+          message: "OpenWRT 未检测到 dnsmasq，请确认系统已安装",
+        };
+      }
+      return;
+    }
+
     try {
       this.installState = {
         status: "installing",
