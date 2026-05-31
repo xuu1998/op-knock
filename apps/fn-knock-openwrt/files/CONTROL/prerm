@@ -1,0 +1,13 @@
+#!/bin/sh
+
+echo "=== fn-knock pre-uninstallation ==="
+
+if [ -f /var/run/fn-knock/backend.pid ]; then
+    kill -9 "$(cat /var/run/fn-knock/backend.pid)" 2>/dev/null || true
+fi
+if [ -f /var/run/fn-knock/gateway.pid ]; then
+    kill -9 "$(cat /var/run/fn-knock/gateway.pid)" 2>/dev/null || true
+fi
+killall go-reauth-proxy-linux-amd64 2>/dev/null || true
+rm -f /var/run/fn-knock/*.pid
+/etc/init.d/fn-knock disable 2>/dev/null || true

@@ -1,0 +1,1 @@
+import{Vo as e,ia as t,ui as n,vo as r,yi as i}from"./echarts-vendor-sNQX4Vh2.js";import{O as a}from"./api-U4oeVLN8.js";var o=i({__name:`Skeleton`,props:{class:{type:[Boolean,null,String,Object,Array]}},setup(i){let o=i;return(i,s)=>(t(),n(`div`,{"data-slot":`skeleton`,class:e(r(a)(`animate-pulse rounded-md bg-primary/10`,o.class))},null,2))}});export{o as t};

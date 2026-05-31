@@ -1,0 +1,47 @@
+#!/bin/sh
+
+echo "=== fn-knock post-installation ==="
+
+# Create runtime directories
+mkdir -p /var/run/fn-knock/frp
+mkdir -p /var/run/fn-knock/cloudflared
+mkdir -p /var/run/fn-knock/updates
+mkdir -p /etc/fn-knock
+
+# Set permissions
+chmod 755 /etc/init.d/fn-knock 2>/dev/null || echo "WARNING: chmod failed"
+chmod 755 /usr/lib/fn-knock/server/go-reauth-proxy-linux-amd64 2>/dev/null || true
+chmod 755 /usr/lib/fn-knock/server/go-reauth-proxy-linux-arm64 2>/dev/null || true
+
+# Enable the service to start on boot
+/etc/init.d/fn-knock enable 2>/dev/null || echo "WARNING: enable failed (will try manually)"
+
+# Check if Redis is available
+if ! command -v redis-cli >/dev/null 2>&1; then
+    echo "WARNING: redis-cli not found. Please install redis package."
+    echo "  opkg update && opkg install redis"
+fi
+
+# Check if Node.js is available
+if ! command -v node >/dev/null 2>&1; then
+    echo "WARNING: node not found in PATH."
+    echo "Please ensure Node.js >= 18 is installed, or set FN_KNOCK_NODE_BIN env var."
+fi
+
+# Generate initial configuration if needed
+if [ ! -f /etc/fn-knock/config.json ]; then
+    echo "Creating default gateway configuration..."
+    mkdir -p /etc/fn-knock
+    cat > /etc/fn-knock/config.json << 'EOF'
+{
+  "admin": { "port": 7996 },
+  "proxy": { "port": 7999 }
+}
+EOF
+fi
+
+echo "fn-knock installed successfully."
+echo "Start the service with: /etc/init.d/fn-knock start"
+echo "Access the panel at: http://<router-ip>:7999"
+
+exit 0

@@ -1,0 +1,31 @@
+spec_version: "2.1"
+app_id: com.fnknock.ugreen
+version: 1.7.0
+support_arch:
+  - amd64
+  - arm64
+start_cmd: bin/fn-knock-start.sh
+port: 7998
+proxy_path: api
+open_type: inner
+tag_types:
+  - utility
+  - devtool
+depend_fw_version: 1.13.0.0000
+i18n:
+  en-US:
+    name: fn-knock
+    description: "A secure access gateway and admin panel for private services, including reverse proxy, SSL, DDNS, WAF, and tunnels."
+    author: kci-lnk
+    official: https://www.fnknock.cn/
+    help: https://docs.fnknock.cn/
+    publisher: kci-lnk
+    publisher_link: https://github.com/kci-lnk
+  zh-CN:
+    name: 敲门knock
+    description: "一款针�?NAS 的安全防护与访问网关软件，内置反向代理、防火墙控制、SSL 证书、DDNS、WAF 和隧道�?
+    author: kci-lnk
+    official: https://www.fnknock.cn/
+    help: https://docs.fnknock.cn/
+    publisher: kci-lnk
+    publisher_link: https://github.com/kci-lnk

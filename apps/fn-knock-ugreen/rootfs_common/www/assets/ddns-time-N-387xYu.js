@@ -1,0 +1,1 @@
+import{r as e}from"./HumanFriendlyTime-DZHsSXco.js";var t=t=>{let n=t.locale||`zh-CN`;return[`最后成功更新: ${e(t.updatedAt,{locale:n,emptyText:`从未`})}`,`最后检查: ${e(t.checkedAt,{locale:n,emptyText:`从未`})}`]};export{t};

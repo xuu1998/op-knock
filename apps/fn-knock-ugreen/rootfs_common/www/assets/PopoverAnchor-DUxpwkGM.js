@@ -1,0 +1,1 @@
+import{La as e,Wi as t,ci as n,da as r,ia as i,vo as a,yi as o}from"./echarts-vendor-sNQX4Vh2.js";import{et as s}from"./ui-vendor-D-Wq-b0h.js";var c=o({__name:`PopoverAnchor`,props:{reference:{},asChild:{type:Boolean},as:{}},setup(o){let c=o;return(o,l)=>(i(),n(a(s),t({"data-slot":`popover-anchor`},c),{default:e(()=>[r(o.$slots,`default`)]),_:3},16))}});export{c as t};

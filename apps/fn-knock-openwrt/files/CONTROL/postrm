@@ -1,0 +1,12 @@
+#!/bin/sh
+
+set -e
+
+echo "=== fn-knock post-uninstallation ==="
+
+# Clean up runtime files
+rm -rf /var/run/fn-knock
+rm -rf /etc/fn-knock
+rm -f /tmp/.fn-knock-*
+
+echo "fn-knock removed. User data in /var/run/fn-knock has been cleaned."

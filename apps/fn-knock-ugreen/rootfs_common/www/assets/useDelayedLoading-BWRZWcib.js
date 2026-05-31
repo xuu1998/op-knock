@@ -1,0 +1,1 @@
+import{Ji as e,Ma as t,co as n,go as r,oi as i}from"./echarts-vendor-sNQX4Vh2.js";function a(a,o={}){let s=o.delay??220,c=n(!1),l=null,u=()=>{l&&=(clearTimeout(l),null)};return t(()=>r(a),e=>{if(u(),!e){c.value=!1;return}l=setTimeout(()=>{c.value=!0,l=null},s)},{immediate:!0}),e(()=>{u()}),i(()=>c.value)}export{a as t};

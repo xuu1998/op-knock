@@ -1,0 +1,1 @@
+var e=1e3;function t(e,t,n){let r=n?.max??1e3;return n?.reset?t.slice(-r):t.length?[...e,...t].slice(-r):e.slice(-r)}export{t as n,e as t};

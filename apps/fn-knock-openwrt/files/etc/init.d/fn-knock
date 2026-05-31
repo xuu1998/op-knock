@@ -1,0 +1,461 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+EXTRA_COMMANDS="status"
+EXTRA_HELP="        status  Check service status"
+
+APP_HOME="/usr/lib/fn-knock"
+PKG_VAR_DIR="/var/run/fn-knock"
+LOG_FILE="${PKG_VAR_DIR}/info.log"
+BACKEND_PID_FILE="${PKG_VAR_DIR}/backend.pid"
+GATEWAY_PID_FILE="${PKG_VAR_DIR}/gateway.pid"
+ALTCHA_HMAC_KEY_FILE="${PKG_VAR_DIR}/altcha_hmac_key"
+GATEWAY_CONFIG_DIR="/etc/fn-knock/"
+
+NODE_BIN=""
+BACKEND_ENTRY="${APP_HOME}/server/server-admin/index.js"
+GATEWAY_BIN_DIR="${APP_HOME}/server"
+GATEWAY_BIN=""
+
+ADMIN_STATIC_PATH="${APP_HOME}/ui/www"
+AUTH_STATIC_PATH="${APP_HOME}/server-auth-view/dist"
+ACME_BUNDLE_ZIP="${APP_HOME}/server/server-admin/resources/acmesh.zip"
+
+BACKEND_PORT=7998
+AUTH_PORT=7997
+GO_BACKEND_PORT=7996
+GO_REPROXY_PORT=7999
+
+ALTCHA_HMAC_KEY=""
+ROOT_SHARE_DIR=""
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+generate_random_hex() {
+    local bytes="${1:-32}"
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex "${bytes}" 2>/dev/null
+        return $?
+    fi
+    od -An -v -N "${bytes}" -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'
+}
+
+resolve_node_bin() {
+    if [ -n "${FN_KNOCK_NODE_BIN}" ] && [ -x "${FN_KNOCK_NODE_BIN}" ]; then
+        NODE_BIN="${FN_KNOCK_NODE_BIN}"
+        log_msg "Using NODE_BIN from env: ${NODE_BIN}"
+        return 0
+    fi
+
+    if [ -x "/usr/bin/node" ]; then
+        NODE_BIN="/usr/bin/node"
+        log_msg "Using system Node.js: ${NODE_BIN}"
+        return 0
+    fi
+
+    for node_dir in /usr/lib/nodejs/*/bin/node /usr/lib/nodejs/node; do
+        if [ -x "${node_dir}" ]; then
+            NODE_BIN="${node_dir}"
+            log_msg "Using bundled Node.js: ${NODE_BIN}"
+            return 0
+        fi
+    done
+
+    NODE_BIN="$(command -v node 2>/dev/null || true)"
+    if [ -n "${NODE_BIN}" ] && [ -x "${NODE_BIN}" ]; then
+        log_msg "Using Node.js from PATH: ${NODE_BIN}"
+        return 0
+    fi
+
+    NODE_BIN=""
+    return 1
+}
+
+ensure_runtime_layout() {
+    if ! mkdir -p "${PKG_VAR_DIR}" "${PKG_VAR_DIR}/frp" "${PKG_VAR_DIR}/cloudflared" "${PKG_VAR_DIR}/updates" >/dev/null 2>&1; then
+        echo "failed to create runtime directories under ${PKG_VAR_DIR}"
+        return 1
+    fi
+
+    if [ ! -w "${PKG_VAR_DIR}" ]; then
+        echo "runtime directory is not writable: ${PKG_VAR_DIR}"
+        return 1
+    fi
+
+    return 0
+}
+
+ensure_gateway_config_dir() {
+    if [ -d "${GATEWAY_CONFIG_DIR}" ]; then
+        return 0
+    fi
+
+    if ! mkdir -p "${GATEWAY_CONFIG_DIR}" >/dev/null 2>&1; then
+        log_msg "failed to create gateway config directory: ${GATEWAY_CONFIG_DIR}"
+        return 1
+    fi
+
+    return 0
+}
+
+resolve_altcha_hmac_key() {
+    local existing=""
+    local generated=""
+
+    if [ -n "${ALTCHA_HMAC_KEY:-}" ]; then
+        return 0
+    fi
+
+    existing="$(cat "${ALTCHA_HMAC_KEY_FILE}" 2>/dev/null || true)"
+    existing="$(printf '%s' "${existing}" | tr -d '\r\n')"
+    if [ -n "${existing}" ]; then
+        ALTCHA_HMAC_KEY="${existing}"
+        return 0
+    fi
+
+    generated="$(generate_random_hex 32)"
+    generated="$(printf '%s' "${generated}" | tr -d '\r\n')"
+    if [ -z "${generated}" ]; then
+        log_msg "Failed to generate ALTCHA_HMAC_KEY"
+        return 1
+    fi
+
+    if ! printf '%s' "${generated}" > "${ALTCHA_HMAC_KEY_FILE}"; then
+        log_msg "Failed to persist ALTCHA_HMAC_KEY"
+        return 1
+    fi
+    chmod 600 "${ALTCHA_HMAC_KEY_FILE}" 2>/dev/null || true
+
+    ALTCHA_HMAC_KEY="${generated}"
+    log_msg "Generated ALTCHA_HMAC_KEY"
+    return 0
+}
+
+resolve_gateway_bin() {
+    local raw_arch=""
+    local normalized_arch=""
+
+    raw_arch="$(uname -m 2>/dev/null || true)"
+    case "${raw_arch}" in
+        x86_64|amd64)
+            normalized_arch="amd64"
+            ;;
+        aarch64|arm64)
+            normalized_arch="arm64"
+            ;;
+        *)
+            log_msg "Unsupported architecture: ${raw_arch:-unknown}"
+            return 1
+            ;;
+    esac
+
+    GATEWAY_BIN="${GATEWAY_BIN_DIR}/go-reauth-proxy-linux-${normalized_arch}"
+    log_msg "Architecture: ${raw_arch}, using: ${GATEWAY_BIN}"
+    return 0
+}
+
+check_process() {
+    local pid="$1"
+    if [ -z "${pid}" ]; then
+        return 1
+    fi
+    if kill -0 "${pid}" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+kill_pid() {
+    local pid="$1"
+    local name="$2"
+    local i=0
+
+    if [ -z "${pid}" ]; then
+        return 0
+    fi
+    if ! check_process "${pid}"; then
+        return 0
+    fi
+
+    log_msg "Stopping ${name} (PID: ${pid})..."
+    kill -TERM "${pid}" 2>>"${LOG_FILE}" || true
+    while [ $i -lt 10 ]; do
+        if ! check_process "${pid}"; then
+            break
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    if check_process "${pid}"; then
+        kill -KILL "${pid}" 2>>"${LOG_FILE}" || true
+        sleep 1
+    fi
+}
+
+kill_pid_service() {
+    local pid_file="$1"
+    local name="$2"
+
+    if [ ! -f "${pid_file}" ]; then
+        return 0
+    fi
+
+    local pid
+    pid="$(cat "${pid_file}" 2>/dev/null || true)"
+    if [ -z "${pid}" ]; then
+        rm -f "${pid_file}"
+        return 0
+    fi
+
+    kill_pid "${pid}" "${name}"
+    rm -f "${pid_file}"
+    log_msg "${name} stopped."
+}
+
+start_gateway() {
+    if [ -f "${GATEWAY_PID_FILE}" ]; then
+        local pid
+        pid="$(cat "${GATEWAY_PID_FILE}" 2>/dev/null || true)"
+        if check_process "${pid}"; then
+            log_msg "Gateway already running (PID: ${pid})"
+            return 0
+        fi
+        rm -f "${GATEWAY_PID_FILE}"
+    fi
+
+    if [ ! -x "${GATEWAY_BIN}" ]; then
+        chmod +x "${GATEWAY_BIN}" 2>/dev/null || true
+    fi
+    if [ ! -x "${GATEWAY_BIN}" ]; then
+        log_msg "Gateway binary missing: ${GATEWAY_BIN}"
+        return 1
+    fi
+
+    local max_attempts=3
+    local attempt=1
+    local pid=""
+
+    while [ "${attempt}" -le "${max_attempts}" ]; do
+        log_msg "Starting Gateway (admin-port=${GO_BACKEND_PORT}, proxy-port=${GO_REPROXY_PORT}, attempt=${attempt}/${max_attempts})..."
+        BACKEND_PORT="${BACKEND_PORT}" \
+        GATEWAY_CONFIG_DIR="${GATEWAY_CONFIG_DIR}" \
+        "${GATEWAY_BIN}" \
+            -admin-port "${GO_BACKEND_PORT}" \
+            -proxy-port "${GO_REPROXY_PORT}" \
+            >/dev/null 2>&1 &
+
+        echo "$!" > "${GATEWAY_PID_FILE}"
+        sleep 1
+        pid="$(cat "${GATEWAY_PID_FILE}" 2>/dev/null || true)"
+        if check_process "${pid}"; then
+            log_msg "Gateway started (PID: ${pid})"
+            return 0
+        fi
+
+        log_msg "Gateway failed to start (attempt ${attempt}/${max_attempts})"
+        rm -f "${GATEWAY_PID_FILE}"
+        if [ "${attempt}" -lt "${max_attempts}" ]; then
+            sleep 1
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    log_msg "Gateway failed to start after ${max_attempts} attempts"
+    return 1
+}
+
+start_backend() {
+    if [ -f "${BACKEND_PID_FILE}" ]; then
+        local pid
+        pid="$(cat "${BACKEND_PID_FILE}" 2>/dev/null || true)"
+        if check_process "${pid}"; then
+            log_msg "Backend already running (PID: ${pid})"
+            return 0
+        fi
+        rm -f "${BACKEND_PID_FILE}"
+    fi
+
+    if ! resolve_node_bin; then
+        log_msg "Node.js runtime not found"
+        return 1
+    fi
+    if [ ! -f "${BACKEND_ENTRY}" ]; then
+        log_msg "Backend entry not found: ${BACKEND_ENTRY}"
+        return 1
+    fi
+    if [ ! -d "${ADMIN_STATIC_PATH}" ]; then
+        log_msg "Admin static path missing: ${ADMIN_STATIC_PATH}"
+        return 1
+    fi
+    if [ ! -d "${AUTH_STATIC_PATH}" ]; then
+        log_msg "Auth static path missing: ${AUTH_STATIC_PATH}"
+        return 1
+    fi
+    if ! resolve_altcha_hmac_key; then
+        log_msg "ALTCHA_HMAC_KEY unavailable"
+        return 1
+    fi
+
+    log_msg "Starting Node.js backend (node=${NODE_BIN}, backend-port=${BACKEND_PORT}, auth-port=${AUTH_PORT})..."
+    (
+        cd "${APP_HOME}" && \
+        ADMIN_STATIC_PATH="${ADMIN_STATIC_PATH}" \
+        AUTH_STATIC_PATH="${AUTH_STATIC_PATH}" \
+        FN_KNOCK_DATA_DIR="${PKG_VAR_DIR}" \
+        FN_KNOCK_ROOT_SHARE_DIR="${ROOT_SHARE_DIR}" \
+        ACME_BUNDLE_ZIP="${ACME_BUNDLE_ZIP}" \
+        BACKEND_PORT="${BACKEND_PORT}" \
+        AUTH_PORT="${AUTH_PORT}" \
+        GO_BACKEND_PORT="${GO_BACKEND_PORT}" \
+        GO_REPROXY_PORT="${GO_REPROXY_PORT}" \
+        ALTCHA_HMAC_KEY="${ALTCHA_HMAC_KEY}" \
+        FN_KNOCK_OPENWRT=1 \
+        "${NODE_BIN}" "${BACKEND_ENTRY}"
+    ) >> "${LOG_FILE}" 2>&1 &
+
+    echo "$!" > "${BACKEND_PID_FILE}"
+    sleep 1
+    if [ ! -s "${BACKEND_PID_FILE}" ]; then
+        log_msg "Backend PID file empty after start"
+        rm -f "${BACKEND_PID_FILE}"
+        return 1
+    fi
+    local pid
+    pid="$(cat "${BACKEND_PID_FILE}" 2>/dev/null || true)"
+    if ! check_process "${pid}"; then
+        log_msg "Backend process exited early (pid=${pid:-empty})"
+        rm -f "${BACKEND_PID_FILE}"
+        return 1
+    fi
+    log_msg "Backend started (PID: ${pid})"
+    return 0
+}
+
+start() {
+    echo "Starting fn-knock..."
+    if ! ensure_runtime_layout; then
+        return 1
+    fi
+    if ! resolve_gateway_bin; then
+        return 1
+    fi
+    if ! ensure_gateway_config_dir; then
+        return 1
+    fi
+
+    log_msg "=== fn-knock start ==="
+    log_msg "Ports: backend=${BACKEND_PORT}, auth=${AUTH_PORT}, go-admin=${GO_BACKEND_PORT}, go-proxy=${GO_REPROXY_PORT}"
+
+    if ! resolve_node_bin; then
+        log_msg "Node.js runtime not found"
+        echo "ERROR: Node.js not found"
+        return 1
+    fi
+
+    echo "  Starting gateway..."
+    if ! start_gateway; then
+        echo "  Gateway failed"
+        return 1
+    fi
+    echo "  Gateway OK"
+
+    echo "  Starting backend..."
+    if ! start_backend; then
+        echo "  Backend failed, stopping gateway..."
+        kill_pid_service "${GATEWAY_PID_FILE}" "Gateway"
+        return 1
+    fi
+    echo "  Backend OK"
+
+    sleep 4
+    log_msg "Registering default admin route with gateway..."
+    curl -s -X POST "http://127.0.0.1:${GO_BACKEND_PORT}/api/rules" \
+        -H "Content-Type: application/json" \
+        -d '[{"path":"/admin","target":"http://127.0.0.1:'"${BACKEND_PORT}"'","rewrite_html":false,"use_auth":false,"use_root_mode":false,"strip_path":true}]' \
+        >/dev/null 2>&1 && \
+        log_msg "Default admin route registered with gateway" || \
+        log_msg "Warning: failed to register default admin route"
+
+    echo "fn-knock started. Panel: http://<router-ip>:${GO_REPROXY_PORT}/admin/"
+    return 0
+}
+
+stop() {
+    echo "Stopping fn-knock..."
+    log_msg "=== fn-knock stop ==="
+    kill_pid_service "${BACKEND_PID_FILE}" "Backend"
+    kill_pid_service "${GATEWAY_PID_FILE}" "Gateway"
+
+    local frpc_config="${PKG_VAR_DIR}/frp/frpc.toml"
+    local cloudflared_bin="${PKG_VAR_DIR}/cloudflared/cloudflared"
+    if [ -f "${frpc_config}" ]; then
+        kill_matching_processes "${frpc_config}" "FRPC"
+    fi
+    if [ -d "${PKG_VAR_DIR}/frp/instances" ]; then
+        for frpc_instance_config in "${PKG_VAR_DIR}"/frp/instances/*/frpc.toml; do
+            [ -f "${frpc_instance_config}" ] || continue
+            kill_matching_processes "${frpc_instance_config}" "FRPC"
+        done
+    fi
+    if [ -f "${cloudflared_bin}" ]; then
+        kill_matching_processes "${cloudflared_bin}" "Cloudflared"
+    fi
+    echo "fn-knock stopped."
+}
+
+reload() {
+    echo "Reloading fn-knock..."
+    stop
+    sleep 1
+    start
+}
+
+kill_matching_processes() {
+    local keyword="$1"
+    local name="$2"
+    local pids=""
+
+    pids="$(ps -w 2>/dev/null | grep -i "${keyword}" | grep -v grep | awk '{print $1}' || true)"
+    if [ -z "${pids}" ]; then
+        return 0
+    fi
+
+    for pid in ${pids}; do
+        if [ -z "${pid}" ] || [ "${pid}" = "$$" ]; then
+            continue
+        fi
+        kill_pid "${pid}" "${name}"
+    done
+}
+
+status() {
+    local backend_running=1
+    local gateway_running=1
+
+    if [ -f "${BACKEND_PID_FILE}" ]; then
+        if check_process "$(cat "${BACKEND_PID_FILE}" 2>/dev/null || true)"; then
+            backend_running=0
+        else
+            rm -f "${BACKEND_PID_FILE}"
+        fi
+    fi
+
+    if [ -f "${GATEWAY_PID_FILE}" ]; then
+        if check_process "$(cat "${GATEWAY_PID_FILE}" 2>/dev/null || true)"; then
+            gateway_running=0
+        else
+            rm -f "${GATEWAY_PID_FILE}"
+        fi
+    fi
+
+    if [ "${backend_running}" -eq 0 ] && [ "${gateway_running}" -eq 0 ]; then
+        echo "fn-knock is running"
+        return 0
+    fi
+    echo "fn-knock is not running"
+    return 1
+}

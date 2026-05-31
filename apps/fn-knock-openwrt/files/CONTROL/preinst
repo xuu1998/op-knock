@@ -1,0 +1,23 @@
+#!/bin/sh
+
+set -e
+
+echo "=== fn-knock pre-installation ==="
+
+# Check architecture compatibility
+ARCH="$(uname -m 2>/dev/null || true)"
+case "${ARCH}" in
+    x86_64|amd64|aarch64|arm64)
+        echo "Architecture ${ARCH} is supported."
+        ;;
+    *)
+        echo "WARNING: Architecture ${ARCH} may not be supported."
+        echo "fn-knock requires x86_64 or aarch64."
+        ;;
+esac
+
+# Check OpenWRT version
+if [ -f /etc/openwrt_release ]; then
+    . /etc/openwrt_release
+    echo "OpenWRT: ${DISTRIB_ID} ${DISTRIB_RELEASE}"
+fi

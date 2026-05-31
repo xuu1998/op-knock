@@ -1,0 +1,1 @@
+var e=`path`,t=t=>t===`subdomain`?`subdomain`:e,n=e=>t(e?.reverse_proxy_submode),r=e=>e?.run_type===1&&n(e)===`subdomain`,i=e=>e?.run_type===3||r(e),a=e=>e?.run_type===1&&n(e)===`path`;export{n as a,r as i,i as n,a as r,e as t};

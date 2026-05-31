@@ -1,0 +1,14 @@
+Package: fn-knock
+Version: 1.7.0
+Depends: libstdcpp
+Source: local
+SourceName: fn-knock
+Section: net
+SourceDateEpoch: 1748620800
+Maintainer: op-knock
+Architecture: x86_64
+Installed-Size: 0
+Description: fn-knock is a gateway and management panel for private service exposure
+ fn-knock provides reverse proxy, authentication, SSL certificates,
+ DDNS management, IP whitelist, WAF firewall, and tunnel integration
+ (Cloudflared/frp) in a single panel. Designed for NAS and home servers.
